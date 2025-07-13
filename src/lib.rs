@@ -45,7 +45,7 @@
 //! 
 //! ```
 
-#![no_std]
+// #![no_std]
 
 mod bits;
 pub mod device;
@@ -56,8 +56,9 @@ use nalgebra::{Vector3, Vector2};
 use embedded_hal::{
     delay::DelayNs,
     i2c::I2c,
+    i2c::Error as I2CError
 };
-
+use i2cdev::linux::LinuxI2CError;          
 
 /// PI, f32
 pub const PI: f32 = core::f32::consts::PI;
@@ -65,11 +66,12 @@ pub const PI: f32 = core::f32::consts::PI;
 /// PI / 180, for conversion to radians
 pub const PI_180: f32 = PI / 180.0;
 
+
 /// All possible errors in this crate
 #[derive(Debug)]
 pub enum Mpu6050Error<E> {
     /// I2C bus error
-    I2c(E),
+    I2CGeneric(E), // Basically I2CGeneric holds a value of type T
 
     /// Invalid chip ID was read
     InvalidChipId(u8),
@@ -83,12 +85,14 @@ pub struct Mpu6050<I2C> {
     gyro_sensitivity: f32,
 }
 
-impl<I2C, E> Mpu6050<I2C>
+
+impl<I2C> Mpu6050<I2C>
 where
-    I2C: I2c<Error=E>, 
+    I2C: I2c,
 {
     /// Side effect free constructor with default sensitivies, no calibration
     pub fn new(i2c: I2C) -> Self {
+        println!("The default slave address {}", DEFAULT_SLAVE_ADDR);
         Mpu6050 {
             i2c,
             slave_addr: DEFAULT_SLAVE_ADDR,
@@ -128,11 +132,11 @@ where
     }
 
     /// Wakes MPU6050 with all sensors enabled (default)
-    fn wake<D: DelayNs>(&mut self, delay: &mut D) -> Result<(), Mpu6050Error<E>> {
+    fn wake(&mut self, delay: &mut dyn DelayNs) -> Result<(), Mpu6050Error<I2C::Error>> {
         // MPU6050 has sleep enabled by default -> set bit 0 to wake
         // Set clock source to be PLL with x-axis gyroscope reference, bits 2:0 = 001 (See Register Map )
         self.write_byte(PWR_MGMT_1::ADDR, 0x01)?;
-        delay.delay_ms(100u32);
+        delay.delay_ms(1000000000u32);
         Ok(())
     }
 
@@ -145,29 +149,36 @@ where
     /// recommended  that  the  device beconfigured  to  use  one  of  the  gyroscopes
     /// (or  an  external  clocksource) as the clock reference for improved stability.
     /// The clock source can be selected according to the following table...."
-    pub fn set_clock_source(&mut self, source: CLKSEL) -> Result<(), Mpu6050Error<E>> {
+    pub fn set_clock_source(&mut self, source: CLKSEL) -> Result<(), Mpu6050Error<I2C::Error>> {
         Ok(self.write_bits(PWR_MGMT_1::ADDR, PWR_MGMT_1::CLKSEL.bit, PWR_MGMT_1::CLKSEL.length, source as u8)?)
     }
 
     /// get current clock source
-    pub fn get_clock_source(&mut self) -> Result<CLKSEL, Mpu6050Error<E>> {
+    pub fn get_clock_source(&mut self) -> Result<CLKSEL, Mpu6050Error<I2C::Error>> {
         let source = self.read_bits(PWR_MGMT_1::ADDR, PWR_MGMT_1::CLKSEL.bit, PWR_MGMT_1::CLKSEL.length)?;
         Ok(CLKSEL::from(source))
     }
 
     /// Init wakes MPU6050 and verifies register addr, e.g. in i2c
-    pub fn init<D: DelayNs>(&mut self, delay: &mut D) -> Result<(), Mpu6050Error<E>> {
+    pub fn init(&mut self, delay: &mut dyn DelayNs) -> Result<(), Mpu6050Error<I2C::Error>> {
+        println!("A");
         self.wake(delay)?;
+        println!("B");
         self.verify()?;
+        println!("C");
         self.set_accel_range(AccelRange::G2)?;
+        println!("D");
         self.set_gyro_range(GyroRange::D250)?;
+        println!("E");
         self.set_accel_hpf(ACCEL_HPF::_RESET)?;
+        println!("F");
         Ok(())
     }
 
     /// Verifies device to address 0x68 with WHOAMI.addr() Register
-    fn verify(&mut self) -> Result<(), Mpu6050Error<E>> {
+    fn verify<>(&mut self) -> Result<(), Mpu6050Error<I2C::Error>> {
         let address = self.read_byte(WHOAMI)?;
+        println!("{:}", address);
         if address != DEFAULT_SLAVE_ADDR {
             return Err(Mpu6050Error::InvalidChipId(address));
         }
@@ -178,7 +189,7 @@ where
     /// sources:
     /// * https://github.com/kriswiner/MPU6050/blob/a7e0c8ba61a56c5326b2bcd64bc81ab72ee4616b/MPU6050IMU.ino#L486
     /// * https://arduino.stackexchange.com/a/48430
-    pub fn setup_motion_detection(&mut self) -> Result<(), Mpu6050Error<E>> {
+    pub fn setup_motion_detection(&mut self) -> Result<(), Mpu6050Error<I2C::Error>> {
         self.write_byte(0x6B, 0x00)?;
         // optional? self.write_byte(0x68, 0x07)?; // Reset all internal signal paths in the MPU-6050 by writing 0x07 to register 0x68;
         self.write_byte(INT_PIN_CFG::ADDR, 0x20)?; //write register 0x37 to select how to use the interrupt pin. For an active high, push-pull signal that stays until register (decimal) 58 is read, write 0x20.
@@ -191,12 +202,12 @@ where
     }
 
     /// get whether or not motion has been detected (INT_STATUS, MOT_INT)
-    pub fn get_motion_detected(&mut self) -> Result<bool, Mpu6050Error<E>> {
+    pub fn get_motion_detected(&mut self) -> Result<bool, Mpu6050Error<I2C::Error>> {
         Ok(self.read_bit(INT_STATUS::ADDR, INT_STATUS::MOT_INT)? != 0)
     }
 
     /// set accel high pass filter mode
-    pub fn set_accel_hpf(&mut self, mode: ACCEL_HPF) -> Result<(), Mpu6050Error<E>> {
+    pub fn set_accel_hpf(&mut self, mode: ACCEL_HPF) -> Result<(), Mpu6050Error<I2C::Error>> {
         Ok(
             self.write_bits(ACCEL_CONFIG::ADDR,
                             ACCEL_CONFIG::ACCEL_HPF.bit,
@@ -206,7 +217,7 @@ where
     }
 
     /// get accel high pass filter mode
-    pub fn get_accel_hpf(&mut self) -> Result<ACCEL_HPF, Mpu6050Error<E>> {
+    pub fn get_accel_hpf(&mut self) -> Result<ACCEL_HPF, Mpu6050Error<I2C::Error>> {
         let mode: u8 = self.read_bits(ACCEL_CONFIG::ADDR,
                                       ACCEL_CONFIG::ACCEL_HPF.bit,
                                       ACCEL_CONFIG::ACCEL_HPF.length)?;
@@ -215,7 +226,7 @@ where
     }
 
     /// Set gyro range, and update sensitivity accordingly
-    pub fn set_gyro_range(&mut self, range: GyroRange) -> Result<(), Mpu6050Error<E>> {
+    pub fn set_gyro_range(&mut self, range: GyroRange) -> Result<(), Mpu6050Error<I2C::Error>> {
         self.write_bits(GYRO_CONFIG::ADDR,
                         GYRO_CONFIG::FS_SEL.bit,
                         GYRO_CONFIG::FS_SEL.length,
@@ -226,7 +237,7 @@ where
     }
 
     /// get current gyro range
-    pub fn get_gyro_range(&mut self) -> Result<GyroRange, Mpu6050Error<E>> {
+    pub fn get_gyro_range<E: I2CError>(&mut self) -> Result<GyroRange, Mpu6050Error<I2C::Error>> {
         let byte = self.read_bits(GYRO_CONFIG::ADDR,
                                   GYRO_CONFIG::FS_SEL.bit,
                                   GYRO_CONFIG::FS_SEL.length)?;
@@ -235,7 +246,7 @@ where
     }
 
     /// set accel range, and update sensitivy accordingly
-    pub fn set_accel_range(&mut self, range: AccelRange) -> Result<(), Mpu6050Error<E>> {
+    pub fn set_accel_range(&mut self, range: AccelRange) -> Result<(), Mpu6050Error<I2C::Error>> {
         self.write_bits(ACCEL_CONFIG::ADDR,
                         ACCEL_CONFIG::FS_SEL.bit,
                         ACCEL_CONFIG::FS_SEL.length,
@@ -246,7 +257,7 @@ where
     }
 
     /// get current accel_range
-    pub fn get_accel_range(&mut self) -> Result<AccelRange, Mpu6050Error<E>> {
+    pub fn get_accel_range(&mut self) -> Result<AccelRange, Mpu6050Error<I2C::Error>> {
         let byte = self.read_bits(ACCEL_CONFIG::ADDR,
                                   ACCEL_CONFIG::FS_SEL.bit,
                                   ACCEL_CONFIG::FS_SEL.length)?;
@@ -255,7 +266,7 @@ where
     }
 
     /// reset device
-    pub fn reset_device<D: DelayNs>(&mut self, delay: &mut D) -> Result<(), Mpu6050Error<E>> {
+    pub fn reset_device(&mut self, delay: &mut dyn DelayNs) -> Result<(), Mpu6050Error<I2C::Error>> {
         self.write_bit(PWR_MGMT_1::ADDR, PWR_MGMT_1::DEVICE_RESET, true)?;
         delay.delay_ms(100u32);
         // Note: Reset sets sleep to true! Section register map: resets PWR_MGMT to 0x40
@@ -263,83 +274,83 @@ where
     }
 
     /// enable, disable i2c master interrupt
-    pub fn set_master_interrupt_enabled(&mut self, enable: bool) -> Result<(), Mpu6050Error<E>> {
+    pub fn set_master_interrupt_enabled(&mut self, enable: bool) -> Result<(), Mpu6050Error<I2C::Error>> {
         Ok(self.write_bit(INT_ENABLE::ADDR, INT_ENABLE::I2C_MST_INT_EN, enable)?)
     }
 
     /// get i2c master interrupt status
-    pub fn get_master_interrupt_enabled(&mut self) -> Result<bool, Mpu6050Error<E>> {
+    pub fn get_master_interrupt_enabled(&mut self) -> Result<bool, Mpu6050Error<I2C::Error>> {
         Ok(self.read_bit(INT_ENABLE::ADDR, INT_ENABLE::I2C_MST_INT_EN)? != 0)
     }
 
     /// enable, disable bypass of sensor
-    pub fn set_bypass_enabled(&mut self, enable: bool) -> Result<(), Mpu6050Error<E>> {
+    pub fn set_bypass_enabled(&mut self, enable: bool) -> Result<(), Mpu6050Error<I2C::Error>> {
         Ok(self.write_bit(INT_PIN_CFG::ADDR, INT_PIN_CFG::I2C_BYPASS_EN, enable)?)
     }
 
     /// get bypass status
-    pub fn get_bypass_enabled(&mut self) -> Result<bool, Mpu6050Error<E>> {
+    pub fn get_bypass_enabled(&mut self) -> Result<bool, Mpu6050Error<I2C::Error>> {
         Ok(self.read_bit(INT_PIN_CFG::ADDR, INT_PIN_CFG::I2C_BYPASS_EN)? != 0)
     }
 
     /// enable, disable sleep of sensor
-    pub fn set_sleep_enabled(&mut self, enable: bool) -> Result<(), Mpu6050Error<E>> {
+    pub fn set_sleep_enabled(&mut self, enable: bool) -> Result<(), Mpu6050Error<I2C::Error>> {
         Ok(self.write_bit(PWR_MGMT_1::ADDR, PWR_MGMT_1::SLEEP, enable)?)
     }
 
     /// get sleep status
-    pub fn get_sleep_enabled(&mut self) -> Result<bool, Mpu6050Error<E>> {
+    pub fn get_sleep_enabled(&mut self) -> Result<bool, Mpu6050Error<I2C::Error>> {
         Ok(self.read_bit(PWR_MGMT_1::ADDR, PWR_MGMT_1::SLEEP)? != 0)
     }
 
     /// enable, disable temperature measurement of sensor
     /// TEMP_DIS actually saves "disabled status"
     /// 1 is disabled! -> enable=true : bit=!enable
-    pub fn set_temp_enabled(&mut self, enable: bool) -> Result<(), Mpu6050Error<E>> {
+    pub fn set_temp_enabled(&mut self, enable: bool) -> Result<(), Mpu6050Error<I2C::Error>> {
         Ok(self.write_bit(PWR_MGMT_1::ADDR, PWR_MGMT_1::TEMP_DIS, !enable)?)
     }
 
     /// get temperature sensor status
     /// TEMP_DIS actually saves "disabled status"
     /// 1 is disabled! -> 1 == 0 : false, 0 == 0 : true
-    pub fn get_temp_enabled(&mut self) -> Result<bool, Mpu6050Error<E>> {
+    pub fn get_temp_enabled(&mut self) -> Result<bool, Mpu6050Error<I2C::Error>> {
         Ok(self.read_bit(PWR_MGMT_1::ADDR, PWR_MGMT_1::TEMP_DIS)? == 0)
     }
 
     /// set accel x self test
-    pub fn set_accel_x_self_test(&mut self, enable: bool) -> Result<(), Mpu6050Error<E>> {
+    pub fn set_accel_x_self_test(&mut self, enable: bool) -> Result<(), Mpu6050Error<I2C::Error>> {
         Ok(self.write_bit(ACCEL_CONFIG::ADDR, ACCEL_CONFIG::XA_ST, enable)?)
     }
 
     /// get accel x self test
-    pub fn get_accel_x_self_test(&mut self) -> Result<bool, Mpu6050Error<E>> {
+    pub fn get_accel_x_self_test(&mut self) -> Result<bool, Mpu6050Error<I2C::Error>> {
         Ok(self.read_bit(ACCEL_CONFIG::ADDR, ACCEL_CONFIG::XA_ST)? != 0)
     }
 
     /// set accel y self test
-    pub fn set_accel_y_self_test(&mut self, enable: bool) -> Result<(), Mpu6050Error<E>> {
+    pub fn set_accel_y_self_test(&mut self, enable: bool) -> Result<(), Mpu6050Error<I2C::Error>> {
         Ok(self.write_bit(ACCEL_CONFIG::ADDR, ACCEL_CONFIG::YA_ST, enable)?)
     }
 
     /// get accel y self test
-    pub fn get_accel_y_self_test(&mut self) -> Result<bool, Mpu6050Error<E>> {
+    pub fn get_accel_y_self_test(&mut self) -> Result<bool, Mpu6050Error<I2C::Error>> {
         Ok(self.read_bit(ACCEL_CONFIG::ADDR, ACCEL_CONFIG::YA_ST)? != 0)
     }
 
     /// set accel z self test
-    pub fn set_accel_z_self_test(&mut self, enable: bool) -> Result<(), Mpu6050Error<E>> {
+    pub fn set_accel_z_self_test(&mut self, enable: bool) -> Result<(), Mpu6050Error<I2C::Error>> {
         Ok(self.write_bit(ACCEL_CONFIG::ADDR, ACCEL_CONFIG::ZA_ST, enable)?)
     }
 
     /// get accel z self test
-    pub fn get_accel_z_self_test(&mut self) -> Result<bool, Mpu6050Error<E>> {
+    pub fn get_accel_z_self_test(&mut self) -> Result<bool, Mpu6050Error<I2C::Error>> {
         Ok(self.read_bit(ACCEL_CONFIG::ADDR, ACCEL_CONFIG::ZA_ST)? != 0)
     }
 
     /// Roll and pitch estimation from raw accelerometer readings
     /// NOTE: no yaw! no magnetometer present on MPU6050
     /// https://www.nxp.com/docs/en/application-note/AN3461.pdf equation 28, 29
-    pub fn get_acc_angles(&mut self) -> Result<Vector2<f32>, Mpu6050Error<E>> {
+    pub fn get_acc_angles(&mut self) -> Result<Vector2<f32>, Mpu6050Error<I2C::Error>> {
         let acc = self.get_acc()?;
 
         Ok(Vector2::<f32>::new(
@@ -363,9 +374,9 @@ where
     }
 
     /// Reads rotation (gyro/acc) from specified register
-    fn read_rot(&mut self, reg: u8) -> Result<Vector3<f32>, Mpu6050Error<E>> {
+    fn read_rot(&mut self, reg: u8) -> Result<Vector3<f32>, Mpu6050Error<I2C::Error>> {
         let mut buf: [u8; 6] = [0; 6];
-        self.read_bytes(reg, &mut buf)?;
+        self.read_bytes(reg, &mut buf).unwrap();
 
         Ok(Vector3::<f32>::new(
             self.read_word_2c(&buf[0..2]) as f32,
@@ -375,7 +386,7 @@ where
     }
 
     /// Accelerometer readings in g
-    pub fn get_acc(&mut self) -> Result<Vector3<f32>, Mpu6050Error<E>> {
+    pub fn get_acc(&mut self) -> Result<Vector3<f32>, Mpu6050Error<I2C::Error>> {
         let mut acc = self.read_rot(ACC_REGX_H)?;
         acc /= self.acc_sensitivity;
 
@@ -383,7 +394,7 @@ where
     }
 
     /// Gyro readings in rad/s
-    pub fn get_gyro(&mut self) -> Result<Vector3<f32>, Mpu6050Error<E>> {
+    pub fn get_gyro(&mut self) -> Result<Vector3<f32>, Mpu6050Error<I2C::Error>> {
         let mut gyro = self.read_rot(GYRO_REGX_H)?;
 
         gyro *= PI_180 / self.gyro_sensitivity;
@@ -392,9 +403,9 @@ where
     }
 
     /// Sensor Temp in degrees celcius
-    pub fn get_temp(&mut self) -> Result<f32, Mpu6050Error<E>> {
+    pub fn get_temp(&mut self) -> Result<f32, Mpu6050Error<I2C::Error>> {
         let mut buf: [u8; 2] = [0; 2];
-        self.read_bytes(TEMP_OUT_H, &mut buf)?;
+        self.read_bytes(TEMP_OUT_H, &mut buf).unwrap();
         let raw_temp = self.read_word_2c(&buf[0..2]) as f32;
 
         // According to revision 4.2
@@ -402,58 +413,68 @@ where
     }
 
     /// Writes byte to register
-    pub fn write_byte(&mut self, reg: u8, byte: u8) -> Result<(), Mpu6050Error<E>> {
-        self.i2c.write(self.slave_addr, &[reg, byte])
-            .map_err(Mpu6050Error::I2c)?;
+    pub fn write_byte(&mut self, reg: u8, byte: u8) -> Result<(), Mpu6050Error<I2C::Error>> {
+
+        self.i2c.write(self.slave_addr, &[reg, byte]).unwrap(); 
         // delay disabled for dev build
         // TODO: check effects with physical unit
         // self.delay.delay_ms(10u8);
         Ok(())
+
+            // .map_err(Mpu6050Error::I2CGeneric)?;
+        // delay disabled for dev build
+        // TODO: check effects with physical unit
+        // self.delay.delay_ms(10u8);
+        // Ok(())
     }
 
     /// Enables bit n at register address reg
-    pub fn write_bit(&mut self, reg: u8, bit_n: u8, enable: bool) -> Result<(), Mpu6050Error<E>> {
+    pub fn write_bit(&mut self, reg: u8, bit_n: u8, enable: bool) -> Result<(), Mpu6050Error<I2C::Error>> {
         let mut byte: [u8; 1] = [0; 1];
-        self.read_bytes(reg, &mut byte)?;
+        self.read_bytes(reg, &mut byte).unwrap();
         bits::set_bit(&mut byte[0], bit_n, enable);
         Ok(self.write_byte(reg, byte[0])?)
     }
 
     /// Write bits data at reg from start_bit to start_bit+length
-    pub fn write_bits(&mut self, reg: u8, start_bit: u8, length: u8, data: u8) -> Result<(), Mpu6050Error<E>> {
+    pub fn write_bits(&mut self, reg: u8, start_bit: u8, length: u8, data: u8) -> Result<(), Mpu6050Error<I2C::Error>> {
         let mut byte: [u8; 1] = [0; 1];
-        self.read_bytes(reg, &mut byte)?;
+        self.read_bytes(reg, &mut byte).unwrap();
         bits::set_bits(&mut byte[0], start_bit, length, data);
         Ok(self.write_byte(reg, byte[0])?)
     }
 
     /// Read bit n from register
-    fn read_bit(&mut self, reg: u8, bit_n: u8) -> Result<u8, Mpu6050Error<E>> {
+    fn read_bit(&mut self, reg: u8, bit_n: u8) -> Result<u8, Mpu6050Error<I2C::Error>> {
         let mut byte: [u8; 1] = [0; 1];
-        self.read_bytes(reg, &mut byte)?;
+        self.read_bytes(reg, &mut byte).unwrap();
         Ok(bits::get_bit(byte[0], bit_n))
     }
 
     /// Read bits at register reg, starting with bit start_bit, until start_bit+length
-    pub fn read_bits(&mut self, reg: u8, start_bit: u8, length: u8) -> Result<u8, Mpu6050Error<E>> {
+    pub fn read_bits(&mut self, reg: u8, start_bit: u8, length: u8) -> Result<u8, Mpu6050Error<I2C::Error>> {
         let mut byte: [u8; 1] = [0; 1];
-        self.read_bytes(reg, &mut byte)?;
+        self.read_bytes(reg, &mut byte).unwrap();
         Ok(bits::get_bits(byte[0], start_bit, length))
     }
 
     /// Reads byte from register
-    pub fn read_byte(&mut self, reg: u8) -> Result<u8, Mpu6050Error<E>> {
+    pub fn read_byte(&mut self, reg: u8) -> Result<u8, Mpu6050Error<<I2C as embedded_hal::i2c::ErrorType>::Error>> {
         let mut byte: [u8; 1] = [0; 1];
-        self.i2c.write_read(self.slave_addr, &[reg], &mut byte)
-            .map_err(Mpu6050Error::I2c)?;
-        Ok(byte[0])
+        println!("Here");
+        match self.i2c.write_read(self.slave_addr, &[reg], &mut byte) {
+            Ok(_) => Ok(byte[0]),
+            Err(e) => Err(Mpu6050Error::I2CGeneric(e))
+        }
     }
 
     /// Reads series of bytes into buf from specified reg
-    pub fn read_bytes(&mut self, reg: u8, buf: &mut [u8]) -> Result<(), Mpu6050Error<E>> {
-        self.i2c.write_read(self.slave_addr, &[reg], buf)
-            .map_err(Mpu6050Error::I2c)?;
-        Ok(())
+    pub fn read_bytes(&mut self, reg: u8, buf: &mut [u8]) -> Result<(), Mpu6050Error<<I2C as embedded_hal::i2c::ErrorType>::Error>> {
+        match self.i2c.write_read(self.slave_addr, &[reg], buf) {
+            Ok(_) => Ok(()),
+            Err(e) => Err(Mpu6050Error::I2CGeneric(e))
+        }
+        // self.i2c.write_read(self.slave_addr, &[reg], buf).map_err(Mpu6050Error::I2CGeneric)?;
     }
 }
 

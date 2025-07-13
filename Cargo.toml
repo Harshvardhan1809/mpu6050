@@ -12,7 +12,9 @@ license = "MIT"
 
 [dependencies]
 embedded-hal = "^1.0.0"
+linux-embedded-hal = "0.4.0"
 libm = "0.2.1"
+i2cdev = "0.6.0"
 
 [dependencies.nalgebra]
 default-features = false
